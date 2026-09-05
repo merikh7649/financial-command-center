@@ -59,6 +59,41 @@
 
   window.FCC_CLEAN_DEV = true;
 
+  // A prior cached deployment of revolut-live.js could still inject the legacy
+  // FCC Secure Access card. The development branch has its own auth gate in
+  // index.html, so remove any legacy Revolut auth card before it can remain on
+  // screen. This is intentionally defensive for stale browser/Vercel caches.
+  function removeLegacyRevolutAuthCard() {
+    const selectors = [
+      '#fcc-revolut-auth-card',
+      '[data-fcc-revolut-auth-card="1"]',
+      '.fcc-revolut-auth-card',
+    ];
+
+    selectors.forEach(selector => {
+      document.querySelectorAll(selector).forEach(node => node.remove());
+    });
+  }
+
+  removeLegacyRevolutAuthCard();
+
+  const legacyAuthObserver = new MutationObserver(() => {
+    removeLegacyRevolutAuthCard();
+  });
+
+  const startLegacyAuthGuard = () => {
+    removeLegacyRevolutAuthCard();
+    if (document.body) {
+      legacyAuthObserver.observe(document.body, { childList: true, subtree: true });
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', startLegacyAuthGuard, { once: true });
+  } else {
+    startLegacyAuthGuard();
+  }
+
   // initCloudSync is a global function in the FCC source. Replacing the global
   // function before DOMContentLoaded prevents the legacy generic finance cloud
   // sync from pulling production financial records into this development app.
@@ -154,11 +189,15 @@
       resetAt: new Date().toISOString(),
     };
 
+    removeLegacyRevolutAuthCard();
+
     if (typeof window.renderAll === 'function') {
       window.renderAll({ resetScroll: false, scrollActiveTab: false });
     }
 
-    console.info('[FCC DEV] Clean financial state ready. Production FCC storage was not modified.');
+    // renderAll can re-create application UI after the reset; clean up one more
+    // time so a stale Revolut script can never leave a second auth surface.
+    setTimeout(removeLegacyRevolutAuthCard, 0);
   }
 
   // Run after the existing FCC DOMContentLoaded initialization. The reset is
