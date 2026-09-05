@@ -1,0 +1,114 @@
+name: Build clean Revolut dev version
+
+on:
+  push:
+    paths:
+      - dev-clean-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch index.html for isolated dev mode
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('index.html')
+          text = path.read_text(encoding='utf-8')
+
+          # Keep the strategic sales target, but start the clean dev state at zero.
+          replacements = [
+              ("const USE_REAL_BANK_IMPORT = true;", "const USE_REAL_BANK_IMPORT = false;"),
+              ("const CURRENT_ANNUAL_SALES = 59;", "const CURRENT_ANNUAL_SALES = 0;"),
+              ("actualSales:59,", "actualSales:0,"),
+              ("const cloudReady = await initCloudSync();", "const cloudReady = false;"),
+              ("await initCloudSync();\n        cloudSetStatus('Account created.','success');", "cloudSetStatus('Account created.','success');"),
+              ("const ok=await initCloudSync();\n      if(ok) cloudSetStatus('Signed in.','success');", "const ok=false;\n      cloudSetStatus('Signed in.','success');"),
+          ]
+
+          for old, new in replacements:
+              if old in text:
+                  text = text.replace(old, new)
+
+          # Give development its own browser storage namespace so production
+          # data can never leak into the clean branch.
+          key_pattern = re.compile(
+              r"const KEYS = \{\n"
+              r"  commissions:'fcc_commissions', expenses:'fcc_expenses', goals:'fcc_goals',\n"
+              r"  contributions:'fcc_contributions', activity:'fcc_activity', settings:'fcc_settings',\n"
+              r"  salesForecast:'fcc_sales_forecast', actualSales:'fcc_actual_sales',\n"
+              r"  monthlySales:'fcc_monthly_sales', reconciliations:'fcc_reconciliations',\n"
+              r"  actualSalesEvents:'fcc_actual_sales_events', otherIncome:'fcc_other_income'\n"
+              r"\};"
+          )
+          key_replacement = """const CLEAN_DEV_MODE = true;
+          const STORAGE_PREFIX = CLEAN_DEV_MODE ? 'fcc_dev_' : 'fcc_';
+          const KEYS = {
+            commissions:STORAGE_PREFIX+'commissions', expenses:STORAGE_PREFIX+'expenses', goals:STORAGE_PREFIX+'goals',
+            contributions:STORAGE_PREFIX+'contributions', activity:STORAGE_PREFIX+'activity', settings:STORAGE_PREFIX+'settings',
+            salesForecast:STORAGE_PREFIX+'sales_forecast', actualSales:STORAGE_PREFIX+'actual_sales',
+            monthlySales:STORAGE_PREFIX+'monthly_sales', reconciliations:STORAGE_PREFIX+'reconciliations',
+            actualSalesEvents:STORAGE_PREFIX+'actual_sales_events', otherIncome:STORAGE_PREFIX+'other_income'
+          };"""
+          text, n = key_pattern.subn(key_replacement, text, count=1)
+          if n != 1:
+              raise SystemExit('KEYS block not found')
+
+          # Physically remove the old imported financial snapshot from this dev branch.
+          import_start = text.find('const REAL_BANK_IMPORT =')
+          storage_marker = '/* ---------------- storage (persists via artifact key-value store; falls back to memory) ---------------- */'
+          import_end = text.find(storage_marker, import_start)
+          if import_start != -1 and import_end != -1:
+              text = text[:import_start] + "const REAL_BANK_IMPORT = { commissions:[], expenses:[], other_income:[], reimbursements:[], commission_reversals:[] };\n\n" + text[import_end:]
+
+          # Dev branch must never hydrate the old generic cloud finance records.
+          cloud_marker = "async function initCloudSync(){\n  if(!supabaseClient){"
+          cloud_replacement = """async function initCloudSync(){
+  if(CLEAN_DEV_MODE){
+    cloudSyncReady=false;
+    return false;
+  }
+  if(!supabaseClient){"""
+          if cloud_marker in text:
+              text = text.replace(cloud_marker, cloud_replacement, 1)
+
+          # Avoid showing the old generic cloud login gate in the clean branch.
+          gate_marker = "  if(!cloudReady && !cloudUser) cloudShowGate('signin');"
+          gate_replacement = "  if(!CLEAN_DEV_MODE && !cloudReady && !cloudUser) cloudShowGate('signin');"
+          if gate_marker in text:
+              text = text.replace(gate_marker, gate_replacement, 1)
+
+          path.write_text(text, encoding='utf-8')
+          print('Clean dev patch applied.')
+          PY
+
+      - name: Validate clean dev patch
+        run: |
+          grep -q 'const USE_REAL_BANK_IMPORT = false;' index.html
+          grep -q 'const CURRENT_ANNUAL_SALES = 0;' index.html
+          grep -q "const CLEAN_DEV_MODE = true;" index.html
+          grep -q "fcc_dev_" index.html
+          grep -q 'const REAL_BANK_IMPORT = { commissions:[], expenses:[], other_income:[], reimbursements:[], commission_reversals:[] };' index.html
+
+      - name: Commit and remove temporary workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f dev-clean-trigger.txt .github/workflows/dev-clean-reset.yml
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes needed"
+          else
+            git commit -m "Create isolated blank financial dev state"
+            git push
+          fi
