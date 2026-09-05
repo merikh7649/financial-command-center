@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,maximum-scale=1">
+  <title>Financial Command Center — Clean Development</title>
+  <style>
+    html,body{margin:0;background:#080807;color:#f2eee6;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+    #loading{min-height:100vh;display:grid;place-items:center;color:#d6a13a;font-size:12px;letter-spacing:2px;text-transform:uppercase}
+    #error{max-width:680px;margin:10vh auto;padding:24px;border:1px solid #2a2823;border-radius:16px;background:#12110f;color:#f2eee6;line-height:1.6}
+  </style>
+</head>
+<body>
+  <div id="loading">Loading clean development environment…</div>
+  <script>
+  (async()=>{
+    const loading=document.getElementById('loading');
+    try{
+      const response=await fetch('/index.html',{cache:'no-store'});
+      if(!response.ok) throw new Error(`Could not load base app (${response.status})`);
+      let text=await response.text();
+
+      // Mark this deployment as the isolated blank development environment.
+      text=text.replace('<head>','<head><script>window.FCC_CLEAN_DEV=true;<\/script>',1);
+
+      // Remove the entire embedded banking snapshot so no historical finance data exists in this build.
+      const bankPattern=/const REAL_BANK_IMPORT = \{[\s\S]*?\};\s*const USE_REAL_BANK_IMPORT = true;/;
+      if(!bankPattern.test(text)) throw new Error('Embedded banking snapshot was not found in the base app.');
+      text=text.replace(bankPattern,"const REAL_BANK_IMPORT={expenses:[],other_income:[],income_review:[],monthly_balances:[],current_balance_cents:0,as_of:null,commissions:[],reimbursements:[],work_expense_rule_total_cents:0,work_expense_rule_count:0,classification_rule:{},work_funds_received:[],classification_rule_version:'dev_blank',commission_reversals:[],trajectory_daily_balances:{},trajectory_as_of:null,trajectory_account:null}; const USE_REAL_BANK_IMPORT=false;");
+
+      // Remove demo/historical sales values.
+      text=text.replace('const CURRENT_ANNUAL_SALES = 59;','const CURRENT_ANNUAL_SALES = 0;');
+      text=text.replace('Number(DB.actualSales ?? 59)','Number(DB.actualSales ?? 0)');
+      text=text.replace('parseInt(state.actualSales ?? 59,10)','parseInt(state.actualSales ?? 0,10)');
+      text=text.replace('const ANNUAL_SALES_TARGET = 120;','const ANNUAL_SALES_TARGET = 0;');
+      text=text.replace('const USABLE_CASH_FLOOR_CENTS = 200000;','const USABLE_CASH_FLOOR_CENTS = 0;');
+      text=text.replace('expected_commission_per_sale_cents: 247305','expected_commission_per_sale_cents: null');
+
+      // Make the monthly sales target a real persisted setting.
+      const oldTarget="const MONTHLY_SALES_TARGET = 20;\n\nfunction calculateMonthlyFinancialTargetCents(){\n  return MONTHLY_SALES_TARGET * actualNetCommissionPerSaleCents();\n}";
+      const newTarget="function getMonthlySalesTarget(){\n  const value=Number(DB?.settings?.monthly_sales_target);\n  return Number.isFinite(value)&&value>0?Math.floor(value):20;\n}\n\nfunction calculateMonthlyFinancialTargetCents(){\n  return getMonthlySalesTarget() * actualNetCommissionPerSaleCents();\n}";
+      if(!text.includes(oldTarget)) throw new Error('Monthly target definition was not found.');
+      text=text.replace(oldTarget,newTarget,1);
+      text=text.replace(/\bMONTHLY_SALES_TARGET\b/g,'getMonthlySalesTarget()');
+
+      // Settings: editable monthly sales objective.
+      const readonlyTarget=/<div class="field"><input type="number" value="\$\{getMonthlySalesTarget\(\)\}" readonly \/><\/div>/;
+      if(readonlyTarget.test(text)){
+        text=text.replace(readonlyTarget,'<div class="field"><input id="setMonthlySalesTarget" type="number" inputmode="numeric" min="1" step="1" value="${s.monthly_sales_target ?? 20}" /></div>',1);
+      }
+
+      // Save the actual monthly sales objective synchronously in the native Settings handler.
+      const settingsAnchor="case 'save-settings': {\n      const s = DB.settings;";
+      const settingsReplacement="case 'save-settings': {\n      const s = DB.settings;\n      const monthlySalesTarget = readNum('setMonthlySalesTarget');\n      s.monthly_sales_target = monthlySalesTarget!==null ? Math.max(1,Math.floor(monthlySalesTarget)) : (s.monthly_sales_target ?? 20);";
+      if(!text.includes(settingsAnchor)) throw new Error('Settings save handler was not found.');
+      text=text.replace(settingsAnchor,settingsReplacement,1);
+
+      // Dev load path: never hydrate old local finance records or shared cloud financial_state.
+      const loadAnchor='async function loadAll(){';
+      const loadGuard="async function loadAll(){\n  if(window.FCC_CLEAN_DEV){\n    let storedSettings=null;\n    try{storedSettings=await Storage.get(KEYS.settings);}catch(e){}\n    DB.commissions=[]; DB.expenses=[]; DB.otherIncome=[]; DB.reimbursements=[]; DB.goals=[]; DB.contributions=[]; DB.activity=[]; DB.salesForecast=[]; DB.monthlySales={}; DB.actualSales=0; DB.actualSalesEvents=[]; DB.reconciliations=[]; DB.bankOtherIncome=[]; DB.bankIncomeReview=[]; DB.bankMonthlyBalances=[];\n    const saved=storedSettings?JSON.parse(storedSettings):{};\n    DB.settings=Object.assign(defaultSettings(),{monthly_sales_target:(Number.isFinite(Number(saved.monthly_sales_target))&&Number(saved.monthly_sales_target)>0?Math.floor(Number(saved.monthly_sales_target)):20)});\n    return;\n  }";
+      if(!text.includes(loadAnchor)) throw new Error('loadAll function was not found.');
+      text=text.replace(loadAnchor,loadGuard,1);
+
+      const cloudAnchor='async function initCloudSync(){';
+      const cloudGuard="async function initCloudSync(){\n  if(window.FCC_CLEAN_DEV){\n    if(!supabaseClient){cloudShowGate('signin'); cloudSetStatus('Cloud connection could not be initialized.','error'); return false;}\n    const {data:{session}}=await supabaseClient.auth.getSession();\n    if(!session?.user){cloudShowGate('signin'); return false;}\n    cloudUser=session.user;\n    cloudSyncReady=false;\n    cloudHideGate();\n    return true;\n  }";
+      if(!text.includes(cloudAnchor)) throw new Error('initCloudSync function was not found.');
+      text=text.replace(cloudAnchor,cloudGuard,1);
+
+      // The base app is now transformed before any of its scripts execute.
+      document.open();
+      document.write(text);
+      document.close();
+    }catch(error){
+      console.error(error);
+      loading?.remove();
+      const box=document.createElement('div');
+      box.id='error';
+      box.innerHTML='<strong>Clean development build failed.</strong><br><br>'+String(error.message||error);
+      document.body.appendChild(box);
+    }
+  })();
+  </script>
+</body>
+</html>
