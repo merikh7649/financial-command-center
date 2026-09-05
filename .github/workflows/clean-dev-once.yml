@@ -1,0 +1,132 @@
+name: Clean development state
+
+on:
+  push:
+    branches:
+      - clean-revolut-dev
+
+permissions:
+  contents: write
+
+jobs:
+  clean-dev:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout development branch
+        uses: actions/checkout@v4
+        with:
+          ref: clean-revolut-dev
+          fetch-depth: 0
+
+      - name: Clean financial state and isolate development storage
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          path = Path('index.html')
+          text = path.read_text(encoding='utf-8')
+
+          # Development-only switch: use separate browser keys so the clean
+          # branch can never reuse the production app's local financial state.
+          key_pattern = re.compile(
+              r"const KEYS = \{\n"
+              r"  commissions:'fcc_commissions', expenses:'fcc_expenses', goals:'fcc_goals',\n"
+              r"  contributions:'fcc_contributions', activity:'fcc_activity', settings:'fcc_settings',\n"
+              r"  salesForecast:'fcc_sales_forecast', actualSales:'fcc_actual_sales',\n"
+              r"  monthlySales:'fcc_monthly_sales', reconciliations:'fcc_reconciliations',\n"
+              r"  actualSalesEvents:'fcc_actual_sales_events', otherIncome:'fcc_other_income'\n"
+              r"\};"
+          )
+          key_replacement = """const CLEAN_DEV_MODE = true;
+          const STORAGE_PREFIX = CLEAN_DEV_MODE ? 'fcc_dev_' : 'fcc_';
+          const KEYS = {
+            commissions:STORAGE_PREFIX+'commissions', expenses:STORAGE_PREFIX+'expenses', goals:STORAGE_PREFIX+'goals',
+            contributions:STORAGE_PREFIX+'contributions', activity:STORAGE_PREFIX+'activity', settings:STORAGE_PREFIX+'settings',
+            salesForecast:STORAGE_PREFIX+'sales_forecast', actualSales:STORAGE_PREFIX+'actual_sales',
+            monthlySales:STORAGE_PREFIX+'monthly_sales', reconciliations:STORAGE_PREFIX+'reconciliations',
+            actualSalesEvents:STORAGE_PREFIX+'actual_sales_events', otherIncome:STORAGE_PREFIX+'other_income'
+          };"""
+          text, count = key_pattern.subn(key_replacement, text, count=1)
+          if count != 1:
+              raise SystemExit(f'KEYS block replacement failed: {count}')
+
+          # Remove the old imported/private financial snapshot from the dev
+          # source entirely. The next storage section is the stable boundary.
+          import_start = text.find('const REAL_BANK_IMPORT =')
+          storage_marker = '/* ---------------- storage (persists via artifact key-value store; falls back to memory) ---------------- */'
+          import_end = text.find(storage_marker, import_start)
+          if import_start == -1 or import_end == -1 or import_end <= import_start:
+              raise SystemExit('REAL_BANK_IMPORT block boundary not found')
+          clean_import = "const REAL_BANK_IMPORT = { commissions:[], expenses:[], other_income:[], reimbursements:[], commission_reversals:[] };\n\n"
+          text = text[:import_start] + clean_import + text[import_end:]
+
+          # Start development sales state at zero while keeping the strategic
+          # annual target itself intact.
+          text, n1 = re.subn(r'const CURRENT_ANNUAL_SALES = 59;', 'const CURRENT_ANNUAL_SALES = 0;', text, count=1)
+          if n1 != 1:
+              raise SystemExit(f'CURRENT_ANNUAL_SALES replacement failed: {n1}')
+
+          text, n2 = re.subn(r"DB\.actualSales = as != null \? Math\.max\(0, parseInt\(as,10\) \|\| 0\) : 59;", "DB.actualSales = as != null ? Math.max(0, parseInt(as,10) || 0) : 0;", text, count=1)
+          if n2 != 1:
+              raise SystemExit(f'DB.actualSales default replacement failed: {n2}')
+
+          # In the clean branch, use only the development storage values and
+          # never rehydrate the old bank-import snapshot.
+          old_block = re.compile(
+              r"DB\.commissions = REAL_BANK_IMPORT\.commissions\.map\(x => \(\{\.\.\.x\}\)\)\.concat\(liveCommissions\);\n"
+              r"DB\.expenses = REAL_BANK_IMPORT\.expenses\.map\(x => \(\{\.\.\.x\}\)\)\.concat\(liveExpenses\);\n"
+              r"const importedOtherIncomeIds = new Set\(\(REAL_BANK_IMPORT\.other_income \|\| \[\]\)\.map\(x=>x\.id\)\);\n"
+              r"const liveOtherIncome = storedOtherIncome\.filter\(x=>x && !importedOtherIncomeIds\.has\(x\.id\)\);\n"
+              r"DB\.otherIncome = \(REAL_BANK_IMPORT\.other_income \|\| \[\]\)\.map\(x=>\(\{\.\.\.x\}\)\)\.concat\(liveOtherIncome\);\n"
+              r"DB\.reimbursements = \(REAL_BANK_IMPORT\.reimbursements \|\| \[\]\)\.map\(x => \(\{\.\.\.x\}\)\);"
+          )
+          new_block = """if(CLEAN_DEV_MODE){
+            DB.commissions = liveCommissions;
+            DB.expenses = liveExpenses;
+            DB.otherIncome = liveOtherIncome;
+            DB.reimbursements = [];
+          }else{
+            DB.commissions = REAL_BANK_IMPORT.commissions.map(x => ({...x})).concat(liveCommissions);
+            DB.expenses = REAL_BANK_IMPORT.expenses.map(x => ({...x})).concat(liveExpenses);
+            const importedOtherIncomeIds = new Set((REAL_BANK_IMPORT.other_income || []).map(x=>x.id));
+            const liveOtherIncome = storedOtherIncome.filter(x=>x && !importedOtherIncomeIds.has(x.id));
+            DB.otherIncome = (REAL_BANK_IMPORT.other_income || []).map(x=>({...x})).concat(liveOtherIncome);
+            DB.reimbursements = (REAL_BANK_IMPORT.reimbursements || []).map(x => ({...x}));
+          }"""
+          text, n3 = old_block.subn(new_block, text, count=1)
+          if n3 != 1:
+              raise SystemExit(f'financial import injection replacement failed: {n3}')
+
+          # Never pull/push generic FCC financial records in this development
+          # branch. Revolut data continues through the dedicated bridge.
+          cloud_marker = "async function initCloudSync(){\n  if(!supabaseClient){"
+          cloud_replacement = """async function initCloudSync(){
+  if(CLEAN_DEV_MODE){
+    cloudSyncReady=false;
+    return false;
+  }
+  if(!supabaseClient){"""
+          if cloud_marker not in text:
+              raise SystemExit('initCloudSync marker not found')
+          text = text.replace(cloud_marker, cloud_replacement, 1)
+
+          # Do not show the old generic cloud gate in the clean branch.
+          init_marker = "  if(!cloudReady && !cloudUser) cloudShowGate('signin');"
+          init_replacement = "  if(!CLEAN_DEV_MODE && !cloudReady && !cloudUser) cloudShowGate('signin');"
+          if init_marker not in text:
+              raise SystemExit('init gate marker not found')
+          text = text.replace(init_marker, init_replacement, 1)
+
+          path.write_text(text, encoding='utf-8')
+          PY
+
+          rm -f dev-clean-reset.js dev-clean-trigger.txt .github/workflows/dev-clean-reset.yml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html .github/workflows/clean-dev-once.yml dev-clean-reset.js dev-clean-trigger.txt .github/workflows/dev-clean-reset.yml
+          git commit -m "Clean development financial state" || exit 0
+          git push origin clean-revolut-dev
