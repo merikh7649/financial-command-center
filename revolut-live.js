@@ -579,6 +579,19 @@
     return globalThis.FCC_REVOLUT;
   }
 
+  function reapplyRevolutCapital() {
+    const data = globalThis.FCC_REVOLUT;
+    if (!data?.balanceAvailable || !Number.isFinite(Number(data.primaryBalance))) return;
+    if (!globalThis.DB?.settings || typeof globalThis.renderAll !== 'function') return;
+
+    globalThis.DB.settings.bank_balance_override_cents = moneyToCents(data.primaryBalance);
+    globalThis.DB.settings.bank_data_as_of = data.syncedAt || new Date().toISOString();
+    globalThis.DB.settings.revolut_live = true;
+    globalThis.DB.settings.revolut_primary_currency = 'MXN';
+    globalThis.DB.settings.revolut_balance_available = true;
+    globalThis.renderAll({ resetScroll: false, scrollActiveTab: false });
+  }
+
   async function connectAndSync() {
     try {
       await ensureSupabaseClient();
@@ -596,6 +609,13 @@
       const session = await getSession();
       if (session?.user) {
         await loadLiveRevolut();
+
+        // The FCC bootstrap also restores its local bank snapshot. Re-apply
+        // the live Revolut MXN value after that bootstrap finishes so the
+        // converted Revolut balance remains the source of Current Capital.
+        [250, 1000, 2500, 5000].forEach(delay => {
+          setTimeout(reapplyRevolutCapital, delay);
+        });
       }
     } catch (error) {
       console.error('[FCC Revolut] Live sync failed:', error);
