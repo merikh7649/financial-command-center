@@ -1,0 +1,72 @@
+name: Build clean Revolut dev version
+
+on:
+  push:
+    paths:
+      - dev-clean-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch index.html for isolated dev mode
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('index.html')
+          text = path.read_text()
+
+          replacements = [
+              ("const USE_REAL_BANK_IMPORT = true;", "const USE_REAL_BANK_IMPORT = false;"),
+              ("const CURRENT_ANNUAL_SALES = 59;", "const CURRENT_ANNUAL_SALES = 0;"),
+              ("actualSales:59,", "actualSales:0,"),
+              ("const cloudReady = await initCloudSync();", "const cloudReady = false;"),
+              ("await initCloudSync();\n        cloudSetStatus('Account created.','success');", "cloudSetStatus('Account created.','success');"),
+              ("const ok=await initCloudSync();\n      if(ok) cloudSetStatus('Signed in.','success');", "const ok=false;\n      cloudSetStatus('Signed in.','success');"),
+          ]
+
+          for old, new in replacements:
+              count = text.count(old)
+              if count == 0:
+                  raise SystemExit(f'Expected text not found: {old!r}')
+              text = text.replace(old, new)
+
+          marker = "</body>"
+          script = '<script src="./dev-clean-reset.js"></script>\n'
+          if script not in text:
+              if marker not in text:
+                  raise SystemExit('Closing body tag not found.')
+              text = text.replace(marker, script + marker, 1)
+
+          path.write_text(text)
+          print('index.html patched for isolated clean development mode')
+          PY
+
+      - name: Validate HTML script references
+        run: |
+          grep -q 'dev-clean-reset.js' index.html
+          grep -q 'const USE_REAL_BANK_IMPORT = false;' index.html
+          grep -q 'const CURRENT_ANNUAL_SALES = 0;' index.html
+          grep -q 'actualSales:0,' index.html
+          grep -q 'const cloudReady = false;' index.html
+
+      - name: Commit clean dev patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html dev-clean-reset.js
+          if git diff --cached --quiet; then
+            echo "No changes needed"
+          else
+            git commit -m "Create isolated blank financial dev state"
+            git push
+          fi
