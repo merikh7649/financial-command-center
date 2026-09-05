@@ -1,10 +1,10 @@
 /*
  * FINANCIAL COMMAND CENTER — LIVE REVOLUT + SUPABASE BRIDGE
  *
- * Browser-safe layer:
- * - Supabase publishable key only.
- * - Supabase Auth session stays in the browser-managed Supabase session.
- * - Revolut access/refresh tokens never enter this file or the browser.
+ * Development branch authentication model:
+ * - The existing FCC/Supabase auth screen in index.html is the single login UI.
+ * - This bridge never renders a second login card.
+ * - Supabase publishable key is browser-safe; Revolut access/refresh tokens stay server-side.
  * - OAuth authorization codes are exchanged server-side by the Edge Function.
  */
 (() => {
@@ -19,15 +19,6 @@
 
   function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? '')
-      .replaceAll('&', '&amp;')
-      .replaceAll('<', '&lt;')
-      .replaceAll('>', '&gt;')
-      .replaceAll('"', '&quot;')
-      .replaceAll("'", '&#039;');
   }
 
   function moneyToCents(value) {
@@ -101,77 +92,6 @@
     const style = document.createElement('style');
     style.id = 'fcc-revolut-auth-styles';
     style.textContent = `
-      #fcc-revolut-auth-card {
-        position: fixed;
-        inset: auto 18px 18px 18px;
-        z-index: 99999;
-        max-width: 430px;
-        margin: 0 auto;
-        padding: 20px;
-        border: 1px solid rgba(184, 143, 76, .35);
-        border-radius: 18px;
-        background: rgba(17, 17, 17, .97);
-        box-shadow: 0 18px 60px rgba(0,0,0,.45);
-        color: #f3eee6;
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        backdrop-filter: blur(18px);
-      }
-      #fcc-revolut-auth-card[hidden] { display: none !important; }
-      #fcc-revolut-auth-card .fcc-auth-title {
-        margin: 0 0 6px;
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: 22px;
-        letter-spacing: .01em;
-      }
-      #fcc-revolut-auth-card .fcc-auth-subtitle {
-        margin: 0 0 16px;
-        color: rgba(243,238,230,.68);
-        font-size: 13px;
-        line-height: 1.45;
-      }
-      #fcc-revolut-auth-card input {
-        box-sizing: border-box;
-        width: 100%;
-        margin: 0 0 10px;
-        padding: 12px 13px;
-        border: 1px solid rgba(255,255,255,.12);
-        border-radius: 10px;
-        background: rgba(255,255,255,.055);
-        color: #fff;
-        outline: none;
-      }
-      #fcc-revolut-auth-card input:focus {
-        border-color: rgba(184,143,76,.7);
-      }
-      #fcc-revolut-auth-card .fcc-auth-actions {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 9px;
-        margin-top: 4px;
-      }
-      #fcc-revolut-auth-card button {
-        appearance: none;
-        border: 0;
-        border-radius: 10px;
-        padding: 11px 12px;
-        cursor: pointer;
-        font-weight: 600;
-      }
-      #fcc-revolut-auth-card .fcc-primary {
-        background: #b88f4c;
-        color: #111;
-      }
-      #fcc-revolut-auth-card .fcc-secondary {
-        background: rgba(255,255,255,.08);
-        color: #f3eee6;
-      }
-      #fcc-revolut-auth-card .fcc-status {
-        min-height: 18px;
-        margin-top: 11px;
-        color: rgba(243,238,230,.68);
-        font-size: 12px;
-        line-height: 1.4;
-      }
       #fcc-revolut-user-card {
         position: fixed;
         right: 18px;
@@ -236,106 +156,44 @@
   function ensureAuthUI() {
     injectAuthStyles();
 
-    let card = document.getElementById('fcc-revolut-auth-card');
-    if (!card) {
-      card = document.createElement('section');
-      card.id = 'fcc-revolut-auth-card';
-      card.hidden = true;
-      card.innerHTML = `
-        <h2 class="fcc-auth-title">FCC Secure Access</h2>
-        <p class="fcc-auth-subtitle">
-          Sign in to load your private Revolut account data into Financial Command Center.
-        </p>
-        <input id="fcc-auth-email" type="email" autocomplete="email" placeholder="Email" />
-        <input id="fcc-auth-password" type="password" autocomplete="current-password" placeholder="Password" />
-        <div class="fcc-auth-actions">
-          <button id="fcc-auth-signin" class="fcc-primary" type="button">Sign in</button>
-          <button id="fcc-auth-signup" class="fcc-secondary" type="button">Create account</button>
-        </div>
-        <div id="fcc-auth-status" class="fcc-status"></div>
-      `;
-      document.body.appendChild(card);
-
-      const emailInput = document.getElementById('fcc-auth-email');
-      const passwordInput = document.getElementById('fcc-auth-password');
-      const status = document.getElementById('fcc-auth-status');
-
-      const runAuth = async mode => {
-        try {
-          status.textContent = mode === 'signin' ? 'Signing in…' : 'Creating account…';
-          const client = await ensureSupabaseClient();
-          const email = emailInput.value.trim();
-          const password = passwordInput.value;
-
-          if (!email || !password) {
-            status.textContent = 'Enter your email and password.';
-            return;
-          }
-          if (password.length < 6) {
-            status.textContent = 'Password must be at least 6 characters.';
-            return;
-          }
-
-          if (mode === 'signin') {
-            const { error } = await client.auth.signInWithPassword({ email, password });
-            if (error) throw error;
-            status.textContent = 'Signed in. Loading Revolut data…';
-            await refreshAuthUI();
-            await loadLiveRevolut();
-          } else {
-            const { data, error } = await client.auth.signUp({ email, password });
-            if (error) throw error;
-            if (!data?.session) {
-              status.textContent = 'Account created. Check your email to confirm the account, then sign in.';
-            } else {
-              status.textContent = 'Account created. Loading Revolut data…';
-              await refreshAuthUI();
-              await loadLiveRevolut();
-            }
-          }
-        } catch (error) {
-          console.error('[FCC Auth] Authentication failed:', error);
-          status.textContent = error?.message || 'Authentication failed.';
-        }
-      };
-
-      document.getElementById('fcc-auth-signin').addEventListener('click', () => runAuth('signin'));
-      document.getElementById('fcc-auth-signup').addEventListener('click', () => runAuth('signup'));
-    }
-
     let userCard = document.getElementById('fcc-revolut-user-card');
-    if (!userCard) {
-      userCard = document.createElement('div');
-      userCard.id = 'fcc-revolut-user-card';
-      userCard.hidden = true;
-      userCard.innerHTML = `
-        <span id="fcc-revolut-user-label"></span>
-        <button id="fcc-revolut-connect" type="button">Connect Revolut</button>
-        <button id="fcc-revolut-signout" type="button">Sign out</button>
-      `;
-      document.body.appendChild(userCard);
+    if (userCard) return userCard;
 
-      document.getElementById('fcc-revolut-connect').addEventListener('click', () => {
-        window.location.href = `${EDGE_FUNCTION_URL}/authorize`;
-      });
+    userCard = document.createElement('div');
+    userCard.id = 'fcc-revolut-user-card';
+    userCard.hidden = true;
+    userCard.innerHTML = `
+      <span id="fcc-revolut-user-label"></span>
+      <button id="fcc-revolut-connect" type="button">Connect Revolut</button>
+      <button id="fcc-revolut-signout" type="button">Sign out</button>
+    `;
+    document.body.appendChild(userCard);
 
-      document.getElementById('fcc-revolut-signout').addEventListener('click', async () => {
-        try {
-          const client = await ensureSupabaseClient();
-          const { error } = await client.auth.signOut();
-          if (error) throw error;
-          window.FCC_REVOLUT = null;
-          if (window.DB?.settings) {
-            window.DB.settings.revolut_live = false;
-          }
-          await refreshAuthUI();
-          showToast('Signed out.');
-        } catch (error) {
-          console.error('[FCC Auth] Sign-out failed:', error);
-          showToast(error?.message || 'Sign-out failed.');
+    document.getElementById('fcc-revolut-connect').addEventListener('click', () => {
+      window.location.href = `${EDGE_FUNCTION_URL}/authorize`;
+    });
+
+    document.getElementById('fcc-revolut-signout').addEventListener('click', async () => {
+      try {
+        const client = await ensureSupabaseClient();
+        const { error } = await client.auth.signOut();
+        if (error) throw error;
+        window.FCC_REVOLUT = null;
+        if (window.DB?.settings) {
+          window.DB.settings.revolut_live = false;
         }
-      });
-    }
+        await refreshAuthUI();
+        if (typeof window.renderAll === 'function') {
+          window.renderAll({ resetScroll: false, scrollActiveTab: false });
+        }
+        showToast('Signed out.');
+      } catch (error) {
+        console.error('[FCC Auth] Sign-out failed:', error);
+        showToast(error?.message || 'Sign-out failed.');
+      }
+    });
+
+    return userCard;
   }
 
   async function getSession() {
@@ -346,18 +204,14 @@
   }
 
   async function refreshAuthUI() {
-    ensureAuthUI();
-    const session = await getSession();
-    const card = document.getElementById('fcc-revolut-auth-card');
-    const userCard = document.getElementById('fcc-revolut-user-card');
+    const userCard = ensureAuthUI();
     const label = document.getElementById('fcc-revolut-user-label');
+    const session = await getSession();
 
     if (session?.user) {
-      card.hidden = true;
       userCard.hidden = false;
-      label.textContent = session.user.email || 'Signed in';
+      if (label) label.textContent = session.user.email || 'Signed in';
     } else {
-      card.hidden = false;
       userCard.hidden = true;
     }
 
@@ -456,9 +310,9 @@
       balance: latestByAccount.get(account.account_id) || null,
     }));
 
-    // FCC is MXN-based, so convert every supported Revolut currency to MXN
-    // before calculating Current Capital. This keeps GBP/EUR/USD sandbox
-    // balances useful without ever treating their native amounts as pesos.
+    // FCC is MXN-based. Convert each synced Revolut currency to MXN before
+    // calculating Current Capital, but never treat native GBP/EUR/USD values
+    // as MXN amounts.
     const currencyBalances = new Map();
     for (const account of accountRows) {
       const currency = String(
@@ -498,7 +352,7 @@
       try {
         return await request(providerUrl);
       } catch (providerError) {
-        console.warn(`[FCC FX] ECB rate unavailable for ${currency}; using blended rate.`, providerError);
+        console.warn(`[FCC FX] ECB rate unavailable for ${currency}; using Frankfurter fallback.`, providerError);
         const result = await request(fallbackUrl);
         return { ...result, provider: 'Frankfurter blended' };
       }
@@ -537,18 +391,16 @@
     const hasConvertibleBalance =
       fxComplete && Number.isFinite(availablePrimaryBalance);
 
-    if (DB.settings) {
-      // Current Capital is always MXN. Only override it when every Revolut
-      // currency in the synced dataset has a valid FX rate to MXN.
-      DB.settings.bank_balance_override_cents = hasConvertibleBalance
+    if (window.DB?.settings) {
+      window.DB.settings.bank_balance_override_cents = hasConvertibleBalance
         ? moneyToCents(availablePrimaryBalance)
         : null;
-      DB.settings.bank_data_as_of = new Date().toISOString();
-      DB.settings.revolut_live = true;
-      DB.settings.revolut_account_count = accountRows.length;
-      DB.settings.revolut_primary_currency = 'MXN';
-      DB.settings.revolut_balance_available = hasConvertibleBalance;
-      DB.settings.revolut_fx_date =
+      window.DB.settings.bank_data_as_of = new Date().toISOString();
+      window.DB.settings.revolut_live = true;
+      window.DB.settings.revolut_account_count = accountRows.length;
+      window.DB.settings.revolut_primary_currency = 'MXN';
+      window.DB.settings.revolut_balance_available = hasConvertibleBalance;
+      window.DB.settings.revolut_fx_date =
         currencies.map(currency => fxRates[currency]?.date).filter(Boolean).sort().pop() || null;
     }
 
@@ -567,7 +419,9 @@
       balanceAvailable: hasConvertibleBalance,
     };
 
-    renderAll({ resetScroll: false, scrollActiveTab: false });
+    if (typeof window.renderAll === 'function') {
+      window.renderAll({ resetScroll: false, scrollActiveTab: false });
+    }
 
     console.info('[FCC Revolut] Live banking sync complete.', {
       accounts: accountRows.length,
@@ -594,8 +448,33 @@
 
   async function connectAndSync() {
     try {
-      await ensureSupabaseClient();
+      const client = await ensureSupabaseClient();
       ensureAuthUI();
+
+      // Keep the single existing FCC auth screen as the login UI, but watch
+      // this client for sign-in/sign-out so the Revolut bridge reacts to it.
+      if (!window.__FCC_REVOLUT_AUTH_LISTENER__) {
+        window.__FCC_REVOLUT_AUTH_LISTENER__ = true;
+        client.auth.onAuthStateChange((event, session) => {
+          void refreshAuthUI();
+          if (event === 'SIGNED_IN' && session?.user) {
+            void (async () => {
+              try {
+                const ready = await waitForFCC();
+                if (!ready) return;
+                await loadLiveRevolut();
+                [250, 1000, 2500, 5000].forEach(delay => {
+                  setTimeout(reapplyRevolutCapital, delay);
+                });
+              } catch (error) {
+                console.error('[FCC Revolut] Post-login sync failed:', error);
+                showToast(error?.message || 'Live Revolut sync failed.');
+              }
+            })();
+          }
+        });
+      }
+
       await refreshAuthUI();
 
       const ready = await waitForFCC();
@@ -609,10 +488,6 @@
       const session = await getSession();
       if (session?.user) {
         await loadLiveRevolut();
-
-        // The FCC bootstrap also restores its local bank snapshot. Re-apply
-        // the live Revolut MXN value after that bootstrap finishes so the
-        // converted Revolut balance remains the source of Current Capital.
         [250, 1000, 2500, 5000].forEach(delay => {
           setTimeout(reapplyRevolutCapital, delay);
         });
