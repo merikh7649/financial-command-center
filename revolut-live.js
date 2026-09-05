@@ -234,6 +234,7 @@
   }
 
   function ensureAuthUI() {
+    if (document.getElementById('fcc-auth-gate')) return;
     injectAuthStyles();
 
     let card = document.getElementById('fcc-revolut-auth-card');

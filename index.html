@@ -2525,10 +2525,13 @@ function actualNetCommissionPerSaleCents(){
 }
 
 
-const MONTHLY_SALES_TARGET = 20;
+function getMonthlySalesTarget(){
+  const raw = Number(DB?.settings?.monthly_sales_target);
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 20;
+}
 
 function calculateMonthlyFinancialTargetCents(){
-  return MONTHLY_SALES_TARGET * actualNetCommissionPerSaleCents();
+  return getMonthlySalesTarget() * actualNetCommissionPerSaleCents();
 }
 
 function derive(){
@@ -2695,7 +2698,7 @@ function derive(){
     recurringGoalMonthlyCents,
     nonRecurringGoalMonthlyCents,
     plannedGoalFundingMonthlyCents,
-    monthlySalesTarget: MONTHLY_SALES_TARGET
+    monthlySalesTarget: getMonthlySalesTarget()
   };
 }
 
@@ -5743,9 +5746,9 @@ function currentMonthSalesProgress(){
   const current = currentMonthSales();
   return {
     current,
-    target: MONTHLY_SALES_TARGET,
-    remaining: Math.max(MONTHLY_SALES_TARGET-current,0),
-    pct: Math.min((current/MONTHLY_SALES_TARGET)*100,100)
+    target: getMonthlySalesTarget(),
+    remaining: Math.max(getMonthlySalesTarget()-current,0),
+    pct: Math.min((current/getMonthlySalesTarget())*100,100)
   };
 }
 
@@ -6151,7 +6154,7 @@ function screenPlanWeekly(){
   // Actual sales belong to the current month, not to commission deposits.
   const monthKeyNow = monthKey(today);
   const monthSales = currentMonthSales();
-  const monthRemaining = Math.max(MONTHLY_SALES_TARGET - monthSales, 0);
+  const monthRemaining = Math.max(getMonthlySalesTarget() - monthSales, 0);
 
   // Weekly sales target is derived from the 20-sale monthly target and the
   // number of working days in the current month. A normal 6-day work week
@@ -6339,7 +6342,7 @@ function screenPlanWeekly(){
       </div>
       <div class="row" style="margin-top:8px;">
         <span class="tiny">${currentWeek ? weekActualSales : 0} / ${weekGoal} sales</span>
-        <span class="tiny">${monthSales} / ${MONTHLY_SALES_TARGET} this month</span>
+        <span class="tiny">${monthSales} / ${getMonthlySalesTarget()} this month</span>
       </div>
     </div>
   </div>`;
@@ -6388,7 +6391,7 @@ function annualSalesProgress(){
 function screenPlanSales(){
   const d = derive();
   const commissionPerSale = d.expectedCommissionPerSaleCents;
-  const monthlyGoal = MONTHLY_SALES_TARGET;
+  const monthlyGoal = getMonthlySalesTarget();
   const actualMonthSales = currentMonthSales();
   const salesRemaining = Math.max(monthlyGoal - actualMonthSales, 0);
 
@@ -6578,7 +6581,7 @@ function screenPlanActivity(){
   const workdays = days.filter(dt=>workingDays.includes(Engine.d(dt).getDay()));
 
   const monthlyActual = currentMonthSales();
-  const monthlyRemaining = Math.max(MONTHLY_SALES_TARGET - monthlyActual, 0);
+  const monthlyRemaining = Math.max(getMonthlySalesTarget() - monthlyActual, 0);
 
   // Monthly required pace.
   const monthEnd = Engine.endOfMonth(today);
@@ -6680,7 +6683,7 @@ function screenPlanActivity(){
         <div style="flex:1;"><div class="value-md gold">${dailyRequired.sales}</div><div class="tiny">SALES</div></div>
       </div>
       <div class="row" style="margin-top:10px;">
-        <span class="tiny sans">MONTHLY ${monthlyActual}/${MONTHLY_SALES_TARGET}</span>
+        <span class="tiny sans">MONTHLY ${monthlyActual}/${getMonthlySalesTarget()}</span>
         <span class="tiny sans">ANNUAL ${annual.current}/${annual.target}</span>
       </div>
     </div>
@@ -6948,7 +6951,7 @@ function screenSettings(){
       <div class="label label-gold">MONTHLY TARGETS</div>
       <div>
         <div class="tiny" style="margin-bottom:6px;">Monthly sales target</div>
-        <div class="field"><input type="number" value="${MONTHLY_SALES_TARGET}" readonly /></div>
+        <div class="field"><input id="setMonthlySalesTarget" type="number" inputmode="numeric" min="1" step="1" value="${getMonthlySalesTarget()}" /></div>
       </div>
       <div>
         <div class="tiny" style="margin-bottom:6px;">Monthly financial target (MXN)</div>
@@ -7239,7 +7242,7 @@ function systemIntegrityReport(){
   const issues=[];
 
   if(ANNUAL_SALES_TARGET<59) issues.push('annual target invalid');
-  if(MONTHLY_SALES_TARGET!==20) issues.push('monthly sales target invalid');
+  if(getMonthlySalesTarget()!==20) issues.push('monthly sales target invalid');
   if(USABLE_CASH_FLOOR_CENTS!==200000) issues.push('cash floor invalid');
 
   (DB.goals||[]).forEach(g=>{
@@ -7742,6 +7745,8 @@ async function handleAction(action, ds, evt){
     case 'save-settings': {
       const s = DB.settings;
       s.user_name = readStr('setName').trim() || s.user_name;
+      const monthlySalesTarget = readNum('setMonthlySalesTarget');
+      s.monthly_sales_target = monthlySalesTarget !== null ? Math.max(1, Math.floor(monthlySalesTarget)) : 20;
       const target = readNum('setTarget'); s.monthly_target_cents = target!==null ? Engine.toCents(target) : null;
       const budget = readNum('setBudget'); s.monthly_budget_cents = budget!==null ? Engine.toCents(budget) : null;
       const opening = readNum('setOpening'); s.opening_capital_cents = opening!==null ? Engine.toCents(opening) : 0;
