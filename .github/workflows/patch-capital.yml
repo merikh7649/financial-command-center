@@ -1,0 +1,32 @@
+name: Patch Revolut capital timing
+
+on:
+  push:
+    paths:
+      - patch_capital_trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch
+        run: |
+          python3 patch_capital.py
+          node --check revolut-live.js
+      - name: Commit patch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add revolut-live.js
+          if git diff --cached --quiet; then
+            echo "No changes needed"
+          else
+            git commit -m "Keep converted Revolut balance as Current Capital"
+            git push
+          fi
