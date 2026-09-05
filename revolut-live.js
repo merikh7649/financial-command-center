@@ -456,30 +456,49 @@
       balance: latestByAccount.get(account.account_id) || null,
     }));
 
-    const mxnAccounts = accountRows.filter(account =>
-      String(account.currency || account.balance?.currency || '').toUpperCase() === 'MXN'
-    );
+    // FCC is a MXN-based command center. Never add balances from different
+    // currencies together as though they were MXN. Sandbox test accounts may
+    // be GBP/EUR/etc., while a future production connection can contain MXN.
+    const currencyBalances = new Map();
+    for (const account of accountRows) {
+      const currency = String(
+        account.currency || account.balance?.currency || ''
+      ).toUpperCase();
+      if (!currency) continue;
+      currencyBalances.set(
+        currency,
+        (currencyBalances.get(currency) || 0) + getBalanceAmount(account.balance),
+      );
+    }
 
-    const primaryAccounts = mxnAccounts.length ? mxnAccounts : accountRows;
-    const totalPrimaryBalance = primaryAccounts.reduce(
-      (sum, account) => sum + getBalanceAmount(account.balance),
-      0,
-    );
+    const mxnBalance = currencyBalances.get('MXN');
+    const hasMxn = Number.isFinite(mxnBalance);
+    const availablePrimaryBalance = hasMxn ? mxnBalance : null;
 
     if (DB.settings) {
-      DB.settings.bank_balance_override_cents = moneyToCents(totalPrimaryBalance);
+      // Only let Revolut override Current Capital when an MXN balance exists.
+      // This prevents a GBP/EUR Sandbox account from being displayed as pesos.
+      if (hasMxn) {
+        DB.settings.bank_balance_override_cents = moneyToCents(availablePrimaryBalance);
+      } else {
+        DB.settings.bank_balance_override_cents = null;
+      }
       DB.settings.bank_data_as_of = new Date().toISOString();
       DB.settings.revolut_live = true;
       DB.settings.revolut_account_count = accountRows.length;
+      DB.settings.revolut_primary_currency = hasMxn ? 'MXN' : null;
+      DB.settings.revolut_balance_available = hasMxn;
     }
 
-    window.FCC_REVOLUT = {
+    globalThis.FCC_REVOLUT = {
       connected: true,
       syncedAt: new Date().toISOString(),
       accounts: accountRows,
       balances,
-      primaryCurrency: mxnAccounts.length ? 'MXN' : null,
-      primaryBalance: totalPrimaryBalance,
+      primaryCurrency: hasMxn ? 'MXN' : null,
+      primaryBalance: availablePrimaryBalance,
+      currencyBalances: Object.fromEntries(currencyBalances),
+      balanceAvailable: hasMxn,
     };
 
     renderAll({ resetScroll: false, scrollActiveTab: false });
@@ -487,10 +506,11 @@
     console.info('[FCC Revolut] Live banking sync complete.', {
       accounts: accountRows.length,
       balances: balances.length,
-      primaryBalance: totalPrimaryBalance,
+      currencies: Object.fromEntries(currencyBalances),
+      mxnBalance: availablePrimaryBalance,
     });
 
-    return window.FCC_REVOLUT;
+    return globalThis.FCC_REVOLUT;
   }
 
   async function connectAndSync() {
