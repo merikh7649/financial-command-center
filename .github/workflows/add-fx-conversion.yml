@@ -24,5 +24,6 @@ jobs:
             echo "No changes needed"
           else
             git commit -m "Convert Revolut balances to MXN"
+            git pull --rebase origin main
             git push
           fi
