@@ -2,10 +2,12 @@
  * FINANCIAL COMMAND CENTER — CLEAN DEVELOPMENT MODE
  *
  * Development-only runtime layer.
- * - Keeps production localStorage untouched by redirecting only FCC keys to fcc_dev_*.
+ * - Keeps production localStorage untouched by redirecting FCC keys to fcc_dev_*.
  * - Prevents the generic FCC cloud finance sync from rehydrating production data.
  * - Starts the development financial state empty.
- * - Preserves Supabase Auth and the dedicated Revolut bridge.
+ * - Preserves the single native FCC auth screen and the dedicated Revolut bridge.
+ * - Defensively removes any legacy Revolut auth overlay if an older cached bridge
+ *   is still present in the browser or deployment.
  */
 (() => {
   'use strict';
@@ -25,8 +27,6 @@
       : value;
   };
 
-  // Keep Supabase's own auth keys untouched. Only FCC's own localStorage keys
-  // are moved into a development namespace.
   Storage.prototype.getItem = function(key) {
     return originalGetItem.call(this, mapKey(key));
   };
@@ -48,7 +48,6 @@
   };
 
   Storage.prototype.clear = function() {
-    // Never allow the development branch to clear unrelated application data.
     const keys = [];
     for (let i = 0; i < this.length; i += 1) {
       const raw = originalKey.call(this, i);
@@ -59,44 +58,6 @@
 
   window.FCC_CLEAN_DEV = true;
 
-  // A prior cached deployment of revolut-live.js could still inject the legacy
-  // FCC Secure Access card. The development branch has its own auth gate in
-  // index.html, so remove any legacy Revolut auth card before it can remain on
-  // screen. This is intentionally defensive for stale browser/Vercel caches.
-  function removeLegacyRevolutAuthCard() {
-    const selectors = [
-      '#fcc-revolut-auth-card',
-      '[data-fcc-revolut-auth-card="1"]',
-      '.fcc-revolut-auth-card',
-    ];
-
-    selectors.forEach(selector => {
-      document.querySelectorAll(selector).forEach(node => node.remove());
-    });
-  }
-
-  removeLegacyRevolutAuthCard();
-
-  const legacyAuthObserver = new MutationObserver(() => {
-    removeLegacyRevolutAuthCard();
-  });
-
-  const startLegacyAuthGuard = () => {
-    removeLegacyRevolutAuthCard();
-    if (document.body) {
-      legacyAuthObserver.observe(document.body, { childList: true, subtree: true });
-    }
-  };
-
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', startLegacyAuthGuard, { once: true });
-  } else {
-    startLegacyAuthGuard();
-  }
-
-  // initCloudSync is a global function in the FCC source. Replacing the global
-  // function before DOMContentLoaded prevents the legacy generic finance cloud
-  // sync from pulling production financial records into this development app.
   try {
     if (typeof window.initCloudSync === 'function') {
       window.initCloudSync = async function() {
@@ -109,6 +70,28 @@
   } catch (error) {
     console.warn('[FCC DEV] Could not disable generic cloud sync.', error);
   }
+
+  function removeLegacyRevolutAuth() {
+    const legacyCard = document.getElementById('fcc-revolut-auth-card');
+    if (legacyCard) legacyCard.remove();
+
+    const legacyStyles = document.getElementById('fcc-revolut-auth-styles');
+    if (legacyStyles) legacyStyles.remove();
+  }
+
+  // Run immediately and keep watching for any legacy bridge that injects the
+  // duplicate card after this script loads. This is intentionally defensive so
+  // stale cached JS cannot recreate the second login UI on the dev preview.
+  removeLegacyRevolutAuth();
+
+  const legacyAuthObserver = new MutationObserver(() => {
+    removeLegacyRevolutAuth();
+  });
+
+  legacyAuthObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+  });
 
   function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -189,19 +172,15 @@
       resetAt: new Date().toISOString(),
     };
 
-    removeLegacyRevolutAuthCard();
+    removeLegacyRevolutAuth();
 
     if (typeof window.renderAll === 'function') {
       window.renderAll({ resetScroll: false, scrollActiveTab: false });
     }
 
-    // renderAll can re-create application UI after the reset; clean up one more
-    // time so a stale Revolut script can never leave a second auth surface.
-    setTimeout(removeLegacyRevolutAuthCard, 0);
+    console.info('[FCC DEV] Clean financial state ready. Production FCC storage was not modified.');
   }
 
-  // Run after the existing FCC DOMContentLoaded initialization. The reset is
-  // one-time per page load, so data entered later in the development app stays.
   const scheduleReset = () => setTimeout(() => resetToCleanState(), 50);
 
   if (document.readyState === 'loading') {
