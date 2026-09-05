@@ -1,0 +1,62 @@
+name: Wire Live Revolut Bridge
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pages: write
+
+jobs:
+  wire-revolut:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inject Revolut bridge into index.html
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path("index.html")
+          text = path.read_text(encoding="utf-8")
+          marker = '<script src="./revolut-live.js"></script>'
+
+          if marker not in text:
+              close = text.lower().rfind("</body>")
+              if close == -1:
+                  raise SystemExit("Could not find </body> in index.html")
+              text = text[:close] + "\n" + marker + "\n" + text[close:]
+              path.write_text(text, encoding="utf-8")
+              print("Injected Revolut bridge into index.html")
+          else:
+              print("Revolut bridge already present; no change needed")
+
+      - name: Commit wiring change
+        shell: bash
+        run: |
+          if git diff --quiet -- index.html; then
+            echo "No index.html change required."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html
+          git commit -m "Wire live Revolut bridge into FCC"
+          git push origin main
+
+      - name: Request GitHub Pages rebuild
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl --fail --silent --show-error \
+            --request POST \
+            --url "https://api.github.com/repos/${{ github.repository }}/pages/builds" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2026-03-10"
