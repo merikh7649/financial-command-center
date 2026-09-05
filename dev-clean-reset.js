@@ -1,53 +1,121 @@
 /*
- * FINANCIAL COMMAND CENTER — CLEAN DEVELOPMENT RESET
+ * FINANCIAL COMMAND CENTER — CLEAN DEVELOPMENT MODE
  *
- * This file exists only on the clean-revolut-dev branch.
- * It resets FCC's local financial state to a blank starting point without
- * touching Supabase Revolut connection data or the production main branch.
- * Supabase Auth remains available for the Revolut integration.
+ * Development-only runtime layer.
+ * - Keeps production localStorage untouched by redirecting only FCC keys to fcc_dev_*.
+ * - Prevents the generic FCC cloud finance sync from rehydrating production data.
+ * - Starts the development financial state empty.
+ * - Preserves Supabase Auth and the dedicated Revolut bridge.
  */
 (() => {
   'use strict';
 
-  const FCC_STORAGE_KEYS = [
-    'fcc_commissions',
-    'fcc_expenses',
-    'fcc_goals',
-    'fcc_contributions',
-    'fcc_activity',
-    'fcc_sales_forecast',
-    'fcc_actual_sales',
-    'fcc_monthly_sales',
-    'fcc_reconciliations',
-    'fcc_actual_sales_events',
-    'fcc_other_income',
-  ];
+  const DEV_PREFIX = 'fcc_dev_';
+  const FCC_KEY_PREFIX = 'fcc_';
+  const originalGetItem = Storage.prototype.getItem;
+  const originalSetItem = Storage.prototype.setItem;
+  const originalRemoveItem = Storage.prototype.removeItem;
+  const originalKey = Storage.prototype.key;
+  const originalClear = Storage.prototype.clear;
+
+  const mapKey = key => {
+    const value = String(key ?? '');
+    return value.startsWith(FCC_KEY_PREFIX) && !value.startsWith(DEV_PREFIX)
+      ? `${DEV_PREFIX}${value.slice(FCC_KEY_PREFIX.length)}`
+      : value;
+  };
+
+  // Keep Supabase's own auth keys untouched. Only FCC's own localStorage keys
+  // are moved into a development namespace.
+  Storage.prototype.getItem = function(key) {
+    return originalGetItem.call(this, mapKey(key));
+  };
+
+  Storage.prototype.setItem = function(key, value) {
+    return originalSetItem.call(this, mapKey(key), value);
+  };
+
+  Storage.prototype.removeItem = function(key) {
+    return originalRemoveItem.call(this, mapKey(key));
+  };
+
+  Storage.prototype.key = function(index) {
+    const raw = originalKey.call(this, index);
+    if (raw && raw.startsWith(DEV_PREFIX)) {
+      return `fcc_${raw.slice(DEV_PREFIX.length)}`;
+    }
+    return raw;
+  };
+
+  Storage.prototype.clear = function() {
+    // Never allow the development branch to clear unrelated application data.
+    const keys = [];
+    for (let i = 0; i < this.length; i += 1) {
+      const raw = originalKey.call(this, i);
+      if (raw && raw.startsWith(DEV_PREFIX)) keys.push(raw);
+    }
+    keys.forEach(raw => originalRemoveItem.call(this, raw));
+  };
+
+  window.FCC_CLEAN_DEV = true;
+
+  // initCloudSync is a global function in the FCC source. Replacing the global
+  // function before DOMContentLoaded prevents the legacy generic finance cloud
+  // sync from pulling production financial records into this development app.
+  try {
+    if (typeof window.initCloudSync === 'function') {
+      window.initCloudSync = async function() {
+        if (typeof window.cloudSyncReady !== 'undefined') {
+          window.cloudSyncReady = false;
+        }
+        return false;
+      };
+    }
+  } catch (error) {
+    console.warn('[FCC DEV] Could not disable generic cloud sync.', error);
+  }
 
   function wait(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   async function waitForFCC() {
-    for (let i = 0; i < 120; i += 1) {
+    for (let i = 0; i < 160; i += 1) {
       if (window.DB && window.DB.loaded === true) return true;
       await wait(250);
     }
     return false;
   }
 
-  async function reset() {
+  function persistBlankState() {
+    const blank = {
+      'fcc_commissions': '[]',
+      'fcc_expenses': '[]',
+      'fcc_goals': '[]',
+      'fcc_contributions': '[]',
+      'fcc_activity': '[]',
+      'fcc_sales_forecast': '[]',
+      'fcc_actual_sales': '0',
+      'fcc_monthly_sales': '{}',
+      'fcc_reconciliations': '[]',
+      'fcc_actual_sales_events': '[]',
+      'fcc_other_income': '[]',
+    };
+
+    for (const [key, value] of Object.entries(blank)) {
+      try {
+        window.localStorage.setItem(key, value);
+      } catch (error) {
+        console.warn(`[FCC DEV] Could not persist ${key}.`, error);
+      }
+    }
+  }
+
+  async function resetToCleanState() {
     const ready = await waitForFCC();
     if (!ready || !window.DB) {
-      console.warn('[FCC DEV] Clean reset skipped: FCC did not finish loading.');
+      console.warn('[FCC DEV] Clean state skipped: FCC did not finish loading.');
       return;
-    }
-
-    for (const key of FCC_STORAGE_KEYS) {
-      try {
-        window.localStorage.removeItem(key);
-      } catch (error) {
-        console.warn(`[FCC DEV] Could not clear ${key}`, error);
-      }
     }
 
     window.DB.commissions = [];
@@ -78,21 +146,7 @@
     window.DB.settings.revolut_primary_currency = 'MXN';
     window.DB.settings.revolut_fx_date = null;
 
-    try {
-      window.localStorage.setItem('fcc_commissions', '[]');
-      window.localStorage.setItem('fcc_expenses', '[]');
-      window.localStorage.setItem('fcc_other_income', '[]');
-      window.localStorage.setItem('fcc_reconciliations', '[]');
-      window.localStorage.setItem('fcc_goals', '[]');
-      window.localStorage.setItem('fcc_contributions', '[]');
-      window.localStorage.setItem('fcc_activity', '[]');
-      window.localStorage.setItem('fcc_sales_forecast', '[]');
-      window.localStorage.setItem('fcc_actual_sales', '0');
-      window.localStorage.setItem('fcc_monthly_sales', '{}');
-      window.localStorage.setItem('fcc_actual_sales_events', '[]');
-    } catch (error) {
-      console.warn('[FCC DEV] Could not persist clean local state.', error);
-    }
+    persistBlankState();
 
     window.DB.__cleanDev = true;
     window.FCC_DEV_CLEAN = {
@@ -104,12 +158,16 @@
       window.renderAll({ resetScroll: false, scrollActiveTab: false });
     }
 
-    console.info('[FCC DEV] Clean financial state ready.');
+    console.info('[FCC DEV] Clean financial state ready. Production FCC storage was not modified.');
   }
 
+  // Run after the existing FCC DOMContentLoaded initialization. The reset is
+  // one-time per page load, so data entered later in the development app stays.
+  const scheduleReset = () => setTimeout(() => resetToCleanState(), 50);
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', reset, { once: true });
+    document.addEventListener('DOMContentLoaded', scheduleReset, { once: true });
   } else {
-    reset();
+    scheduleReset();
   }
 })();
