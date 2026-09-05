@@ -1,0 +1,105 @@
+name: Rebuild clean dev
+
+on:
+  push:
+    branches:
+      - clean-revolut-dev
+
+permissions:
+  contents: write
+
+jobs:
+  blank-dev:
+    if: github.event.head_commit.message != 'Finalize true blank dev state'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout clean dev
+        uses: actions/checkout@v4
+        with:
+          ref: clean-revolut-dev
+          fetch-depth: 0
+
+      - name: Rebuild index as a true blank dev app
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path('index.html')
+          text = p.read_text(encoding='utf-8')
+          original = text
+
+          # Mark this branch as the isolated development environment before app scripts execute.
+          if 'window.FCC_CLEAN_DEV = true;' not in text:
+              text = text.replace('<head>', '<head>\n<script>window.FCC_CLEAN_DEV = true;</script>', 1)
+
+          # Remove the embedded real banking snapshot completely.
+          text, n = re.subn(
+              r'const REAL_BANK_IMPORT = \\{.*?\\};\\s*const USE_REAL_BANK_IMPORT = true;',
+              "const REAL_BANK_IMPORT = {expenses:[], other_income:[], income_review:[], monthly_balances:[], current_balance_cents:0, as_of:null, commissions:[], reimbursements:[], work_expense_rule_total_cents:0, work_expense_rule_count:0, classification_rule:{}, work_funds_received:[], classification_rule_version:'dev_blank', commission_reversals:[], trajectory_daily_balances:{}, trajectory_as_of:null, trajectory_account:null};\nconst USE_REAL_BANK_IMPORT = false;",
+              text,
+              count=1,
+              flags=re.S,
+          )
+          if n != 1:
+              raise SystemExit('REAL_BANK_IMPORT block was not found exactly once')
+
+          # Remove hardcoded historical annual sales.
+          text = text.replace('const CURRENT_ANNUAL_SALES = 59;', 'const CURRENT_ANNUAL_SALES = 0;')
+          text = text.replace('Number(DB.actualSales ?? 59)', 'Number(DB.actualSales ?? 0)')
+          text = text.replace('parseInt(state.actualSales ?? 59,10)', 'parseInt(state.actualSales ?? 0,10)')
+          text = text.replace(': 59;', ': 0;')
+
+          # Make monthly sales objective a real setting rather than a hardcoded constant.
+          text = text.replace(
+              'const MONTHLY_SALES_TARGET = 20;\n\nfunction calculateMonthlyFinancialTargetCents(){\n  return MONTHLY_SALES_TARGET * actualNetCommissionPerSaleCents();\n}',
+              "function getMonthlySalesTarget(){\n  const value = Number(DB?.settings?.monthly_sales_target);\n  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 20;\n}\n\nfunction calculateMonthlyFinancialTargetCents(){\n  return getMonthlySalesTarget() * actualNetCommissionPerSaleCents();\n}"
+          )
+          # Replace remaining references to the old constant with the getter.
+          text = re.sub(r'\\bMONTHLY_SALES_TARGET\\b', 'getMonthlySalesTarget()', text)
+          text = text.replace(
+              'if(getMonthlySalesTarget()!==20) issues.push(\'monthly sales target invalid\');',
+              'if(getMonthlySalesTarget()<1) issues.push(\'monthly sales target invalid\');'
+          )
+
+          # Make Settings edit the actual monthly sales target setting.
+          text = text.replace(
+              '<div class="field"><input type="number" value="${getMonthlySalesTarget()}" readonly /></div>',
+              '<div class="field"><input id="setMonthlySalesTarget" type="number" inputmode="numeric" min="1" step="1" value="${s.monthly_sales_target ?? 20}" /></div>'
+          )
+          old = "const s = DB.settings;\n      s.user_name = readStr('setName').trim() || s.user_name;"
+          new = "const s = DB.settings;\n      const monthlySalesTarget = readNum('setMonthlySalesTarget');\n      s.monthly_sales_target = monthlySalesTarget!==null ? Math.max(1, Math.floor(monthlySalesTarget)) : (s.monthly_sales_target ?? 20);\n      s.user_name = readStr('setName').trim() || s.user_name;"
+          if old not in text:
+              raise SystemExit('save-settings handler anchor not found')
+          text = text.replace(old, new, 1)
+
+          # The blank dev app must not hydrate finance data from the shared cloud state.
+          old = 'async function initCloudSync(){\n  if(!supabaseClient){'
+          new = "async function initCloudSync(){\n  if(window.FCC_CLEAN_DEV){\n    if(!supabaseClient){\n      cloudShowGate('signin');\n      cloudSetStatus('Cloud connection could not be initialized.','error');\n      return false;\n    }\n    const {data:{session}}=await supabaseClient.auth.getSession();\n    if(!session?.user){\n      cloudShowGate('signin');\n      return false;\n    }\n    cloudUser=session.user;\n    cloudSyncReady=false;\n    cloudHideGate();\n    return true;\n  }\n  if(!supabaseClient){"
+          if old not in text:
+              raise SystemExit('initCloudSync anchor not found')
+          text = text.replace(old, new, 1)
+
+          # In the blank branch, load only settings; financial records come from Revolut/manual entry later.
+          old = 'async function loadAll(){\n  if (USE_REAL_BANK_IMPORT){'
+          new = "async function loadAll(){\n  if(window.FCC_CLEAN_DEV){\n    let storedSettings = null;\n    try { storedSettings = await Storage.get(KEYS.settings); } catch(e) {}\n    DB.commissions=[];\n    DB.expenses=[];\n    DB.otherIncome=[];\n    DB.reimbursements=[];\n    DB.goals=[];\n    DB.contributions=[];\n    DB.activity=[];\n    DB.salesForecast=[];\n    DB.monthlySales={};\n    DB.actualSales=0;\n    DB.actualSalesEvents=[];\n    DB.reconciliations=[];\n    DB.bankOtherIncome=[];\n    DB.bankIncomeReview=[];\n    DB.bankMonthlyBalances=[];\n    DB.settings = storedSettings ? Object.assign(defaultSettings(), JSON.parse(storedSettings)) : defaultSettings();\n    return;\n  }\n  if (USE_REAL_BANK_IMPORT){"
+          if old not in text:
+              raise SystemExit('loadAll anchor not found')
+          text = text.replace(old, new, 1)
+
+          if text == original:
+              raise SystemExit('No changes were produced')
+
+          p.write_text(text, encoding='utf-8')
+          print('index.html rebuilt as blank dev state')
+          PY
+
+          # Remove the old runtime cleanup layer entirely.
+          rm -f dev-clean-reset.js dev-clean-reset-authfix.js
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add index.html dev-clean-reset.js dev-clean-reset-authfix.js
+          git rm -f .github/workflows/blank-dev.yml
+          git commit -m "Finalize true blank dev state"
+          git push origin clean-revolut-dev
