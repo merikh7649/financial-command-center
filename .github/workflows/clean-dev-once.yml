@@ -119,3 +119,6 @@ jobs:
           git add -A
           git commit -m "Clean development financial state" || exit 0
           git push origin clean-revolut-dev
+
+          # Touch the workflow itself so this exact workflow version is the one that runs.
+          # It will be removed by the bot commit above, preventing future runs.
