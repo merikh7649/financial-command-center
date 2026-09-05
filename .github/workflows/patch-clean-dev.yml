@@ -1,0 +1,85 @@
+name: Patch clean dev in place
+
+on:
+  push:
+    branches: [clean-revolut-dev]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply direct clean-dev fixes
+        shell: python
+        run: |
+          from pathlib import Path
+          import re
+
+          index = Path('index.html')
+          text = index.read_text(encoding='utf-8')
+
+          # 1) Make the monthly sales objective a real persistent setting.
+          text = text.replace(
+              'const MONTHLY_SALES_TARGET = 20;\n\nfunction calculateMonthlyFinancialTargetCents(){',
+              "function getMonthlySalesTarget(){\n"
+              "  const raw = Number(DB?.settings?.monthly_sales_target);\n"
+              "  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 20;\n"
+              "}\n\n"
+              "function calculateMonthlyFinancialTargetCents(){"
+          )
+
+          # Replace all runtime references with the persistent getter.
+          text = text.replace('MONTHLY_SALES_TARGET', 'getMonthlySalesTarget()')
+
+          # 2) Make the Settings input editable instead of readonly.
+          old = '<div class=\\"field\\"><input type=\\"number\\" value=\\"${getMonthlySalesTarget()}\\" readonly /></div>'
+          new = '<div class=\\"field\\"><input id=\\"setMonthlySalesTarget\\" type=\\"number\\" inputmode=\\"numeric\\" min=\\"1\\" step=\\"1\\" value=\\"${getMonthlySalesTarget()}\\" /></div>'
+          if old not in text:
+              old = '<div class=\"field\"><input type=\"number\" value=\"${getMonthlySalesTarget()}\" readonly /></div>'
+              new = '<div class=\"field\"><input id=\"setMonthlySalesTarget\" type=\"number\" inputmode=\"numeric\" min=\"1\" step=\"1\" value=\"${getMonthlySalesTarget()}\" /></div>'
+          text = text.replace(old, new, 1)
+
+          # 3) Persist the monthly sales target through the existing Save Settings action.
+          needle = "      const s = DB.settings;\n      s.user_name = readStr('setName').trim() || s.user_name;\n"
+          replacement = (
+              "      const s = DB.settings;\n"
+              "      s.user_name = readStr('setName').trim() || s.user_name;\n"
+              "      const monthlySalesTarget = readNum('setMonthlySalesTarget');\n"
+              "      s.monthly_sales_target = monthlySalesTarget !== null ? Math.max(1, Math.floor(monthlySalesTarget)) : 20;\n"
+          )
+          if needle not in text:
+              raise SystemExit('save-settings anchor not found')
+          text = text.replace(needle, replacement, 1)
+
+          index.write_text(text, encoding='utf-8')
+
+          # 4) Prevent the legacy Revolut bridge from creating a second sign-in surface.
+          revolut = Path('revolut-live.js')
+          r = revolut.read_text(encoding='utf-8')
+          anchor = "  function ensureAuthUI() {\n    injectAuthStyles();\n"
+          patched = "  function ensureAuthUI() {\n    if (document.getElementById('fcc-auth-gate')) return;\n    injectAuthStyles();\n"
+          if anchor in r and patched not in r:
+              r = r.replace(anchor, patched, 1)
+          revolut.write_text(r, encoding='utf-8')
+      - name: Verify direct fixes
+        shell: bash
+        run: |
+          grep -q "function getMonthlySalesTarget" index.html
+          grep -q "id=\\\"setMonthlySalesTarget\\\"" index.html
+          grep -q "s.monthly_sales_target" index.html
+          grep -q "if (document.getElementById('fcc-auth-gate')) return;" revolut-live.js
+      - name: Commit direct fixes and remove one-time workflow
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git rm .github/workflows/patch-clean-dev.yml
+          git add index.html revolut-live.js
+          git commit -m "Make clean dev state native and persistent [skip ci]"
+          git push origin clean-revolut-dev
