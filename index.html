@@ -2201,12 +2201,14 @@ const Storage = {
   }
 };
 
+const CLEAN_DEV_MODE = true;
+const STORAGE_PREFIX = CLEAN_DEV_MODE ? 'fcc_dev_' : 'fcc_';
 const KEYS = {
-  commissions:'fcc_commissions', expenses:'fcc_expenses', goals:'fcc_goals',
-  contributions:'fcc_contributions', activity:'fcc_activity', settings:'fcc_settings',
-  salesForecast:'fcc_sales_forecast', actualSales:'fcc_actual_sales',
-  monthlySales:'fcc_monthly_sales', reconciliations:'fcc_reconciliations',
-  actualSalesEvents:'fcc_actual_sales_events', otherIncome:'fcc_other_income'
+  commissions:STORAGE_PREFIX+'commissions', expenses:STORAGE_PREFIX+'expenses', goals:STORAGE_PREFIX+'goals',
+  contributions:STORAGE_PREFIX+'contributions', activity:STORAGE_PREFIX+'activity', settings:STORAGE_PREFIX+'settings',
+  salesForecast:STORAGE_PREFIX+'sales_forecast', actualSales:STORAGE_PREFIX+'actual_sales',
+  monthlySales:STORAGE_PREFIX+'monthly_sales', reconciliations:STORAGE_PREFIX+'reconciliations',
+  actualSalesEvents:STORAGE_PREFIX+'actual_sales_events', otherIncome:STORAGE_PREFIX+'other_income'
 };
 
 function defaultSettings(){
